@@ -1,5 +1,5 @@
 --============================================================
---  Prison Life | @nklays  (MOBILE VERSION)
+--  Prison Life | @nklays  (MOBILE - with Toggle Button & Custom Circle)
 --============================================================
 
 -- CLEANUP
@@ -18,7 +18,8 @@ if _G.PH5M and _G.PH5M.espDrwCache then
 end
 for _, v in ipairs(game:GetService("CoreGui"):GetChildren()) do
     if v.Name == "PH5M_Main" or v.Name == "PH5M_Lock" or v.Name == "PH5M_HUD"
-       or v.Name == "PH5M_KillFlash" or v.Name == "PH5M_AimBtn" or v.Name == "PH5M_Toggle" then
+       or v.Name == "PH5M_KillFlash" or v.Name == "PH5M_AimBtn" or v.Name == "PH5M_Toggle"
+       or v.Name == "PH5M_FOVHandle" or v.Name == "PH5M_AimToggle" then
         v:Destroy()
     end
 end
@@ -48,7 +49,8 @@ local Camera = workspace.CurrentCamera
 -- SETTINGS
 --============================================================
 local S = {
-    AimbotOn = true,
+    AimbotOn = false,                -- starts off
+    AimToggleBtnVisible = true,      -- show floating aimbot toggle button
     AimPart = "HumanoidRootPart",
     AimMode = "Instant",
     AimSmooth = 0.15,
@@ -57,7 +59,9 @@ local S = {
     FOVVisible = true,
     FOVColorMode = "Rainbow",
     FOVCustomHex = "#FF0000",
-    AimTrigger = "RightHalf",   -- "RightHalf" or "AimButton"
+    FOVThickness = 2,
+    FOVTransparency = 0.1,           -- 0 = invisible, 1 = full
+    AimTrigger = "RightHalf",
 
     ESPOn = true,
     ESPTeam = "All",
@@ -98,12 +102,7 @@ local healthPrev = {}
 local lp_hrp = nil
 local fpsBuffer = {}
 local currentFPS = 0
-
--- Mobile-specific state
 local fovCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-local fovDragPos = nil       -- saved position
-local activeTouches = {}     -- track which inputs are which
-local guiVisible = true
 
 --============================================================
 -- UTILITIES
@@ -150,7 +149,7 @@ local function safeGui(name)
 end
 
 --============================================================
--- DRAG HELPER FOR MOBILE (touch & mouse)
+-- DRAG HELPER (touch & mouse)
 --============================================================
 local function makeDraggable(frame, dragHandle)
     dragHandle = dragHandle or frame
@@ -185,6 +184,34 @@ local function makeDraggable(frame, dragHandle)
                 startPos.X.Scale, startPos.X.Offset + delta.X,
                 startPos.Y.Scale, startPos.Y.Offset + delta.Y
             )
+        end
+    end)
+end
+
+-- "Tap detector" that ignores drags (so dragging doesn't trigger click)
+local function makeTapButton(btn, onTap)
+    local pressed = false
+    local pressPos
+    local DRAG_THRESHOLD = 8
+
+    btn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+           or input.UserInputType == Enum.UserInputType.Touch then
+            pressed = true
+            pressPos = input.Position
+        end
+    end)
+
+    btn.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+           or input.UserInputType == Enum.UserInputType.Touch then
+            if pressed and pressPos then
+                local delta = (input.Position - pressPos).Magnitude
+                if delta < DRAG_THRESHOLD then
+                    onTap()
+                end
+            end
+            pressed = false
         end
     end)
 end
@@ -255,7 +282,7 @@ local C = {
 }
 
 --============================================================
--- MAIN GUI (mobile-sized)
+-- MAIN GUI
 --============================================================
 local gui = safeGui("PH5M_Main")
 
@@ -271,7 +298,6 @@ main.Parent = gui
 Instance.new("UICorner", main).CornerRadius = UDim.new(0, 12)
 local ms = Instance.new("UIStroke", main); ms.Thickness = 1; ms.Color = C.border
 
--- TITLE BAR (drag handle)
 local tBar = Instance.new("Frame")
 tBar.Size = UDim2.new(1, 0, 0, 44)
 tBar.BackgroundColor3 = C.title
@@ -307,7 +333,6 @@ tLabel.Font = Enum.Font.GothamBlack
 tLabel.TextXAlignment = Enum.TextXAlignment.Left
 tLabel.Parent = tBar
 
--- Buttons must be on top so they get touch events
 local closeBtn = Instance.new("TextButton")
 closeBtn.Name = "CloseBtn"
 closeBtn.Size = UDim2.new(0, 36, 0, 32)
@@ -335,10 +360,9 @@ minBtn.ZIndex = 100
 minBtn.Parent = main
 Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 6)
 
--- MAKE MAIN PANEL DRAGGABLE via title bar
 makeDraggable(main, tBar)
 
--- MINI BUTTON (toggles main)
+-- Mini button (toggles main panel)
 local miniGui = safeGui("PH5M_Toggle")
 local miniBtn = Instance.new("TextButton")
 miniBtn.Size = UDim2.new(0, 56, 0, 56)
@@ -354,6 +378,7 @@ miniBtn.Parent = miniGui
 Instance.new("UICorner", miniBtn).CornerRadius = UDim.new(1, 0)
 Instance.new("UIStroke", miniBtn).Color = C.border
 makeDraggable(miniBtn)
+makeTapButton(miniBtn, function() main.Visible = true; miniBtn.Visible = false end)
 
 closeBtn.MouseButton1Click:Connect(function()
     for plr, d in pairs(espDrwCache) do
@@ -369,7 +394,8 @@ closeBtn.MouseButton1Click:Connect(function()
     gui:Destroy()
     miniGui:Destroy()
     for _, v in ipairs(game:GetService("CoreGui"):GetChildren()) do
-        if v.Name == "PH5M_Lock" or v.Name == "PH5M_HUD" or v.Name == "PH5M_KillFlash" or v.Name == "PH5M_AimBtn" then
+        if v.Name == "PH5M_Lock" or v.Name == "PH5M_HUD" or v.Name == "PH5M_KillFlash"
+           or v.Name == "PH5M_AimBtn" or v.Name == "PH5M_FOVHandle" or v.Name == "PH5M_AimToggle" then
             v:Destroy()
         end
     end
@@ -383,7 +409,6 @@ closeBtn.MouseButton1Click:Connect(function()
 end)
 
 minBtn.MouseButton1Click:Connect(function() main.Visible = false; miniBtn.Visible = true end)
-miniBtn.MouseButton1Click:Connect(function() main.Visible = true; miniBtn.Visible = false end)
 
 local sidebar = Instance.new("Frame")
 sidebar.Size = UDim2.new(0, 110, 1, -44)
@@ -495,7 +520,7 @@ for i, name in ipairs(tabNames) do
 end
 
 --============================================================
--- UI COMPONENTS (bigger for touch)
+-- UI COMPONENTS
 --============================================================
 local function mkCard(par, h)
     local f = Instance.new("Frame")
@@ -534,6 +559,7 @@ local function mkSection(par, txt)
     l.Parent = par
 end
 
+-- Stateful toggle (returns set function so external code can update visual)
 local function mkToggle(par, label, def, cb)
     local card = mkCard(par, 44)
     mkLabel(card, label)
@@ -552,14 +578,20 @@ local function mkToggle(par, label, def, cb)
     cir.BorderSizePixel = 0
     cir.Parent = bg
     Instance.new("UICorner", cir).CornerRadius = UDim.new(1, 0)
+
     local st = def
-    bg.MouseButton1Click:Connect(function()
-        st = not st
+    local function setVisual(value)
+        st = value
         TweenService:Create(bg, TweenInfo.new(0.15), { BackgroundColor3 = st and C.green or Color3.fromRGB(55, 55, 65) }):Play()
         TweenService:Create(cir, TweenInfo.new(0.15), { Position = st and UDim2.new(1, -25, 0.5, -11) or UDim2.new(0, 3, 0.5, -11) }):Play()
+    end
+
+    bg.MouseButton1Click:Connect(function()
+        setVisual(not st)
         cb(st)
     end)
-    return card
+
+    return card, setVisual
 end
 
 local function mkDropdown(par, label, opts, def, cb)
@@ -669,11 +701,36 @@ local function mkButton(par, label, col, cb)
 end
 
 --============================================================
+-- FORWARD-DECLARE: external toggle for aimbot button visual
+--============================================================
+local aimToggleBtn        -- screen button (created later)
+local setMenuAimToggle    -- updates the menu toggle visual
+local setScreenAimToggle  -- updates the screen button visual
+
+local function setAimbotState(state)
+    S.AimbotOn = state
+    if setMenuAimToggle then setMenuAimToggle(state) end
+    if setScreenAimToggle then setScreenAimToggle(state) end
+end
+
+--============================================================
 -- AIMBOT TAB
 --============================================================
 local ap = pages["Aimbot"]
 mkSection(ap, "General")
-mkToggle(ap, "Aimbot Enabled", S.AimbotOn, function(v) S.AimbotOn = v end)
+
+-- Aimbot On/Off (synced with screen button)
+local _, setM = mkToggle(ap, "Aimbot Enabled", S.AimbotOn, function(v)
+    S.AimbotOn = v
+    if setScreenAimToggle then setScreenAimToggle(v) end
+end)
+setMenuAimToggle = setM
+
+mkToggle(ap, "Show Floating Button", S.AimToggleBtnVisible, function(v)
+    S.AimToggleBtnVisible = v
+    if aimToggleBtn then aimToggleBtn.Visible = v end
+end)
+
 mkDropdown(ap, "Aim Part", { "HumanoidRootPart", "Head" }, S.AimPart, function(v) S.AimPart = v end)
 mkDropdown(ap, "Aim Mode", { "Instant", "Smooth" }, S.AimMode, function(v) S.AimMode = v end)
 mkSlider(ap, "Smoothing", 1, 100, math.floor(S.AimSmooth * 100), 1, function(v) S.AimSmooth = v / 100 end)
@@ -684,6 +741,8 @@ mkDropdown(ap, "Trigger", { "RightHalf", "AimButton" }, S.AimTrigger, function(v
 mkSection(ap, "FOV Circle")
 mkToggle(ap, "Show Circle", S.FOVVisible, function(v) S.FOVVisible = v end)
 mkSlider(ap, "Circle Size", 50, 500, S.FOVRadius, 10, function(v) S.FOVRadius = v end)
+mkSlider(ap, "Thickness", 1, 10, S.FOVThickness, 1, function(v) S.FOVThickness = v end)
+mkSlider(ap, "Transparency", 0, 100, math.floor(S.FOVTransparency * 100), 5, function(v) S.FOVTransparency = v / 100 end)
 mkDropdown(ap, "Circle Color", { "Rainbow", "Custom" }, S.FOVColorMode, function(v) S.FOVColorMode = v end)
 mkTextInput(ap, "Custom Hex", S.FOVCustomHex, function(v) S.FOVCustomHex = v end)
 mkButton(ap, "Reset FOV to Screen Center", C.accent, function()
@@ -747,16 +806,16 @@ end)
 --============================================================
 -- HUD TAB
 --============================================================
-local hp = pages["HUD"]
-mkSection(hp, "Display")
-mkToggle(hp, "Show FPS", S.ShowFPS, function(v) S.ShowFPS = v end)
-mkToggle(hp, "Show Ping", S.ShowPing, function(v) S.ShowPing = v end)
-mkToggle(hp, "Show Speed", S.ShowSpeed, function(v) S.ShowSpeed = v end)
-mkSection(hp, "Hitmarkers")
-mkToggle(hp, "Hitmarkers Enabled", S.HitmarkOn, function(v) S.HitmarkOn = v end)
-mkTextInput(hp, "Hit Color", S.HitColor, function(v) S.HitColor = v end)
-mkTextInput(hp, "Hurt Color", S.HurtColor, function(v) S.HurtColor = v end)
-mkTextInput(hp, "Kill Color", S.KillColor, function(v) S.KillColor = v end)
+local hpg = pages["HUD"]
+mkSection(hpg, "Display")
+mkToggle(hpg, "Show FPS", S.ShowFPS, function(v) S.ShowFPS = v end)
+mkToggle(hpg, "Show Ping", S.ShowPing, function(v) S.ShowPing = v end)
+mkToggle(hpg, "Show Speed", S.ShowSpeed, function(v) S.ShowSpeed = v end)
+mkSection(hpg, "Hitmarkers")
+mkToggle(hpg, "Hitmarkers Enabled", S.HitmarkOn, function(v) S.HitmarkOn = v end)
+mkTextInput(hpg, "Hit Color", S.HitColor, function(v) S.HitColor = v end)
+mkTextInput(hpg, "Hurt Color", S.HurtColor, function(v) S.HurtColor = v end)
+mkTextInput(hpg, "Kill Color", S.KillColor, function(v) S.KillColor = v end)
 
 --============================================================
 -- TELEPORT TAB
@@ -839,38 +898,24 @@ local fovCircle = Drawing.new("Circle")
 fovCircle.Radius = S.FOVRadius
 fovCircle.Filled = false
 fovCircle.Visible = S.FOVVisible
-fovCircle.Transparency = 0.1
+fovCircle.Transparency = S.FOVTransparency
 fovCircle.NumSides = 64
-fovCircle.Thickness = 1.5
+fovCircle.Thickness = S.FOVThickness
 fovCircle.Color = Color3.new(1, 1, 1)
 _G.AimbotFOVCircleM = fovCircle
 
 --============================================================
--- FOV DRAGGABLE HANDLE (invisible touch frame over the circle)
+-- FOV DRAGGABLE HANDLE
 --============================================================
 local fovHandleGui = safeGui("PH5M_FOVHandle")
-fovHandleGui.Name = "PH5M_FOVHandle"
-
 local fovHandle = Instance.new("Frame")
-fovHandle.Name = "FOVHandle"
 fovHandle.Size = UDim2.new(0, S.FOVRadius * 2, 0, S.FOVRadius * 2)
 fovHandle.Position = UDim2.new(0, fovCenter.X - S.FOVRadius, 0, fovCenter.Y - S.FOVRadius)
 fovHandle.BackgroundTransparency = 1
-fovHandle.Active = false   -- by default does NOT block touches
+fovHandle.Active = false
 fovHandle.Parent = fovHandleGui
 
--- Long-press to drag the FOV circle:
--- Touch & hold for 0.5s on the FOV handle → enters drag mode
-local fovDragging = false
-local pressStart = 0
-local pressInput = nil
-local pressX, pressY = 0, 0
-
-local function setHandleActive(active)
-    fovHandle.Active = active   -- when active, swallows touches
-end
-
--- Small "FOV move" button in the corner to toggle FOV drag mode
+-- Small "FOV move" button in mini gui
 local fovMoveBtn = Instance.new("TextButton")
 fovMoveBtn.Size = UDim2.new(0, 70, 0, 32)
 fovMoveBtn.Position = UDim2.new(0, 10, 0, 165)
@@ -889,15 +934,15 @@ fovMoveBtn.MouseButton1Click:Connect(function()
     if fovMoveActive then
         fovMoveBtn.BackgroundColor3 = C.green
         fovMoveBtn.Text = "DONE"
-        setHandleActive(true)
+        fovHandle.Active = true
     else
         fovMoveBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
         fovMoveBtn.Text = "MOVE FOV"
-        setHandleActive(false)
+        fovHandle.Active = false
     end
 end)
 
--- Drag the FOV handle when active
+-- Drag the FOV handle
 do
     local dragging = false
     local lastInput
@@ -938,7 +983,60 @@ do
 end
 
 --============================================================
--- AIM BUTTON (alternative trigger)
+-- AIMBOT TOGGLE BUTTON (on-screen, draggable)
+--============================================================
+local aimToggleGui = safeGui("PH5M_AimToggle")
+aimToggleBtn = Instance.new("TextButton")
+aimToggleBtn.Name = "AimToggle"
+aimToggleBtn.Size = UDim2.new(0, 100, 0, 44)
+aimToggleBtn.Position = UDim2.new(0, 10, 0, 215)
+aimToggleBtn.BackgroundColor3 = C.bg
+aimToggleBtn.Text = "AIMBOT"
+aimToggleBtn.TextColor3 = C.text
+aimToggleBtn.TextSize = 14
+aimToggleBtn.Font = Enum.Font.GothamBlack
+aimToggleBtn.BorderSizePixel = 0
+aimToggleBtn.Visible = S.AimToggleBtnVisible
+aimToggleBtn.Parent = aimToggleGui
+Instance.new("UICorner", aimToggleBtn).CornerRadius = UDim.new(0, 10)
+local aimStroke = Instance.new("UIStroke", aimToggleBtn)
+aimStroke.Color = C.border
+aimStroke.Thickness = 1.5
+
+-- Status dot inside the button
+local statusDot = Instance.new("Frame")
+statusDot.Size = UDim2.new(0, 8, 0, 8)
+statusDot.Position = UDim2.new(0, 8, 0.5, -4)
+statusDot.BackgroundColor3 = C.red
+statusDot.BorderSizePixel = 0
+statusDot.Parent = aimToggleBtn
+Instance.new("UICorner", statusDot).CornerRadius = UDim.new(1, 0)
+
+-- This function updates the button visual based on state
+setScreenAimToggle = function(state)
+    if state then
+        aimToggleBtn.BackgroundColor3 = C.green
+        aimToggleBtn.TextColor3 = Color3.new(1, 1, 1)
+        aimToggleBtn.Text = "  ON"
+        statusDot.BackgroundColor3 = Color3.new(1, 1, 1)
+        aimStroke.Color = Color3.fromRGB(0, 230, 130)
+    else
+        aimToggleBtn.BackgroundColor3 = C.bg
+        aimToggleBtn.TextColor3 = C.text
+        aimToggleBtn.Text = "  AIMBOT"
+        statusDot.BackgroundColor3 = C.red
+        aimStroke.Color = C.border
+    end
+end
+setScreenAimToggle(S.AimbotOn)
+
+makeDraggable(aimToggleBtn)
+makeTapButton(aimToggleBtn, function()
+    setAimbotState(not S.AimbotOn)
+end)
+
+--============================================================
+-- AIM TRIGGER BUTTON (for hold-to-aim when AimButton mode)
 --============================================================
 local aimBtnGui = safeGui("PH5M_AimBtn")
 local aimBtn = Instance.new("TextButton")
@@ -953,7 +1051,7 @@ aimBtn.Font = Enum.Font.GothamBlack
 aimBtn.BorderSizePixel = 0
 aimBtn.Parent = aimBtnGui
 Instance.new("UICorner", aimBtn).CornerRadius = UDim.new(1, 0)
-Instance.new("UIStroke", aimBtnGui:FindFirstChildOfClass("TextButton")).Color = Color3.new(1, 1, 1)
+Instance.new("UIStroke", aimBtn).Color = Color3.new(1, 1, 1)
 makeDraggable(aimBtn)
 
 local aimBtnHolding = false
@@ -974,18 +1072,14 @@ aimBtn.InputEnded:Connect(function(input)
 end)
 
 --============================================================
--- RIGHT-HALF SCREEN TOUCH TRIGGER
+-- RIGHT-HALF TOUCH TRIGGER
 --============================================================
--- Detects when a touch starts in the right half of the screen
--- AND it's NOT on top of any UI element (so jumping/camera still works)
 local rightHalfTouches = {}
 
 UIS.InputBegan:Connect(function(input, processed)
-    if processed then return end   -- ignore touches that hit UI
+    if processed then return end
     if input.UserInputType ~= Enum.UserInputType.Touch then return end
-
-    local pos = input.Position
-    if pos.X > Camera.ViewportSize.X / 2 then
+    if input.Position.X > Camera.ViewportSize.X / 2 then
         rightHalfTouches[input] = true
         lastShotTime = tick()
     end
@@ -1003,7 +1097,7 @@ local function isRightHalfHolding()
 end
 
 --============================================================
--- LOCK-ON DISPLAY
+-- LOCK-ON UI
 --============================================================
 local lockGui = safeGui("PH5M_Lock")
 local lockBg = Instance.new("Frame")
@@ -1027,7 +1121,7 @@ lockTxt.Text = ""
 lockTxt.Parent = lockBg
 
 --============================================================
--- HUD DISPLAY
+-- HUD
 --============================================================
 local hudGui = safeGui("PH5M_HUD")
 local hudFrame = Instance.new("Frame")
@@ -1064,7 +1158,7 @@ flashFrame.BorderSizePixel = 0
 flashFrame.Parent = flashGui
 
 --============================================================
--- HITMARKER SYSTEM
+-- HITMARKER
 --============================================================
 local hitLines = {}
 for i = 1, 4 do
@@ -1179,11 +1273,7 @@ local function checkHits()
            and v == lockedTarget
            and (tick() - lastShotTime) <= SHOT_WINDOW
         then
-            if cur <= 0 then
-                showKillFlash()
-            else
-                showHitMark()
-            end
+            if cur <= 0 then showKillFlash() else showHitMark() end
             lastShotTime = 0
         end
 
@@ -1195,7 +1285,6 @@ end
 -- AIMBOT LOGIC
 --============================================================
 local function getClosest()
-    -- distance from FOV CENTER (not mouse) for mobile
     local best, bestD = nil, S.FOVRadius
     for _, v in ipairs(playerList) do
         local ch = v.Character
@@ -1286,26 +1375,26 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
     hue = (hue + dt * 0.1) % 1
     local rainbow = Color3.fromHSV(hue, 1, 1)
 
-    -- FOV Circle stays at fovCenter (not mouse)
+    -- FOV Circle (with custom thickness/transparency)
     fovCircle.Position = fovCenter
     fovCircle.Radius = S.FOVRadius
     fovCircle.Visible = S.FOVVisible
+    fovCircle.Thickness = S.FOVThickness
+    fovCircle.Transparency = S.FOVTransparency
     fovCircle.Color = S.FOVColorMode == "Rainbow" and rainbow or hexToC3(S.FOVCustomHex)
 
-    -- Resize FOV handle to match
     fovHandle.Size = UDim2.new(0, S.FOVRadius * 2, 0, S.FOVRadius * 2)
     fovHandle.Position = UDim2.new(0, fovCenter.X - S.FOVRadius, 0, fovCenter.Y - S.FOVRadius)
 
-    -- Determine if aimbot trigger is held
+    -- Trigger
     local aimHolding = false
     if S.AimTrigger == "AimButton" then
         aimHolding = aimBtnHolding
-    else -- RightHalf
+    else
         aimHolding = isRightHalfHolding() or aimBtnHolding
     end
     holding = aimHolding
 
-    -- Show/hide aim button based on mode
     aimBtn.Visible = (S.AimTrigger == "AimButton")
 
     -- AIMBOT
@@ -1336,12 +1425,9 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
         lockBg.Visible = false
     end
 
-    -- Hitmarks
     checkHits()
 
-    --==============================================
     -- ESP DRAWINGS
-    --==============================================
     hideAllDrawings()
 
     local useDrawings = S.ESPOn and (S.ESPStyle ~= "Highlight" or S.ESPTracers)
@@ -1504,9 +1590,7 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
         end
     end
 
-    --==============================================
     -- ESP HIGHLIGHT
-    --==============================================
     if S.ESPOn and S.ESPStyle == "Highlight" then
         local now = tick()
         if now - espTick >= 0.05 then
@@ -1596,7 +1680,7 @@ end)
 pcall(function()
     game.StarterGui:SetCore("SendNotification", {
         Title = "Prison Life Mobile | @nklays",
-        Text = "Loaded. Hold right half of screen to aim.",
+        Text = "Tap AIMBOT button to enable",
         Duration = 4
     })
 end)
