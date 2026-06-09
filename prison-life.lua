@@ -1,5 +1,5 @@
 --============================================================
---  Prison Life | @nklays  (Full Script - Fixed ESP Boxes)
+--  Prison Life | @nklays  (PC - with Customizable Circle)
 --============================================================
 
 -- CLEANUP
@@ -23,7 +23,7 @@ for _, v in ipairs(game:GetService("CoreGui"):GetChildren()) do
 end
 for _, p in ipairs(game:GetService("Players"):GetPlayers()) do
     if p.Character then
-        for _, c in ipairs(p.Character:GetChildren()) do
+        for _, c in ipairs(p.Character:GetDescendants()) do
             if c.Name == "PH5_HL" or c.Name == "PH5_BB" then c:Destroy() end
         end
     end
@@ -56,6 +56,8 @@ local S = {
     FOVVisible = true,
     FOVColorMode = "Rainbow",
     FOVCustomHex = "#FF0000",
+    FOVThickness = 2,                 -- NEW
+    FOVTransparency = 0.1,            -- NEW (0 = invisible, 1 = solid)
 
     ESPOn = true,
     ESPTeam = "All",
@@ -86,6 +88,8 @@ local LOCATIONS = {
 --============================================================
 local holding = false
 local lockedTarget = nil
+local lastShotTime = 0
+local SHOT_WINDOW = 0.4
 local hue = 0
 local playerList = {}
 local espHLCache = {}
@@ -317,7 +321,7 @@ closeBtn.MouseButton1Click:Connect(function()
     end
     for _, p in ipairs(Players:GetPlayers()) do
         if p.Character then
-            for _, ch in ipairs(p.Character:GetChildren()) do
+            for _, ch in ipairs(p.Character:GetDescendants()) do
                 if ch.Name == "PH5_HL" or ch.Name == "PH5_BB" then ch:Destroy() end
             end
         end
@@ -610,7 +614,7 @@ local function mkButton(par, label, col, cb)
 end
 
 --============================================================
--- AIMBOT TAB
+-- AIMBOT TAB (with customizable circle)
 --============================================================
 local ap = pages["Aimbot"]
 mkSection(ap, "General")
@@ -623,6 +627,8 @@ mkDropdown(ap, "Target Team", { "Guards", "Criminals", "Inmates", "All" }, S.Aim
 mkSection(ap, "FOV Circle")
 mkToggle(ap, "Show Circle", S.FOVVisible, function(v) S.FOVVisible = v end)
 mkSlider(ap, "Circle Size", 50, 500, S.FOVRadius, 10, function(v) S.FOVRadius = v end)
+mkSlider(ap, "Thickness", 1, 10, S.FOVThickness, 1, function(v) S.FOVThickness = v end)
+mkSlider(ap, "Transparency", 0, 100, math.floor(S.FOVTransparency * 100), 5, function(v) S.FOVTransparency = v / 100 end)
 mkDropdown(ap, "Circle Color", { "Rainbow", "Custom" }, S.FOVColorMode, function(v) S.FOVColorMode = v end)
 mkTextInput(ap, "Custom Hex", S.FOVCustomHex, function(v) S.FOVCustomHex = v end)
 
@@ -769,15 +775,15 @@ end)
 switchTab("Aimbot")
 
 --============================================================
--- FOV CIRCLE
+-- FOV CIRCLE (with custom thickness/transparency)
 --============================================================
 local fovCircle = Drawing.new("Circle")
 fovCircle.Radius = S.FOVRadius
 fovCircle.Filled = false
 fovCircle.Visible = S.FOVVisible
-fovCircle.Transparency = 0.1
+fovCircle.Transparency = S.FOVTransparency
 fovCircle.NumSides = 64
-fovCircle.Thickness = 1.5
+fovCircle.Thickness = S.FOVThickness
 fovCircle.Color = Color3.new(1, 1, 1)
 _G.AimbotFOVCircle = fovCircle
 
@@ -950,11 +956,18 @@ local function checkHits()
         if not ch then healthPrev[v] = nil; continue end
         local hum = ch:FindFirstChildOfClass("Humanoid")
         if not hum then healthPrev[v] = nil; continue end
+
         local cur = hum.Health
         local prev = healthPrev[v]
-        if prev and cur < prev and holding then
+
+        if prev and cur < prev
+           and v == lockedTarget
+           and (tick() - lastShotTime) <= SHOT_WINDOW
+        then
             if cur <= 0 then showKillFlash() else showHitMark() end
+            lastShotTime = 0
         end
+
         healthPrev[v] = cur
     end
 end
@@ -987,7 +1000,10 @@ local function isValid(p)
 end
 
 conn.mb1down = UIS.InputBegan:Connect(function(i)
-    if i.UserInputType == Enum.UserInputType.MouseButton1 then holding = true end
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then
+        holding = true
+        lastShotTime = tick()
+    end
 end)
 conn.mb1up = UIS.InputEnded:Connect(function(i)
     if i.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -1063,10 +1079,12 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
     hue = (hue + dt * 0.1) % 1
     local rainbow = Color3.fromHSV(hue, 1, 1)
 
-    -- FOV Circle
+    -- FOV Circle (custom thickness + transparency)
     fovCircle.Position = mPos
     fovCircle.Radius = S.FOVRadius
     fovCircle.Visible = S.FOVVisible
+    fovCircle.Thickness = S.FOVThickness
+    fovCircle.Transparency = S.FOVTransparency
     fovCircle.Color = S.FOVColorMode == "Rainbow" and rainbow or hexToC3(S.FOVCustomHex)
 
     -- AIMBOT
@@ -1126,14 +1144,12 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
             local hum = ch:FindFirstChildOfClass("Humanoid")
             if not hrp or not hum or hum.Health <= 0 then continue end
 
-            -- Check player is in front of camera
-            local centerSp, centerVis = Camera:WorldToViewportPoint(hrp.Position)
+            local centerSp, _ = Camera:WorldToViewportPoint(hrp.Position)
             if centerSp.Z <= 0 then continue end
 
             local d = getOrCreateDraw(v)
             local tc = getTeamColor(v)
 
-            -- 2D BOX (FIXED — uses character bounding box)
             if S.ESPStyle == "2D Box" then
                 local okBB, cfBB, sizeBB = pcall(function()
                     local cf, sz = ch:GetBoundingBox()
@@ -1210,7 +1226,6 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
                     end
                 end
 
-            -- HEAD ONLY
             elseif S.ESPStyle == "Head Only" then
                 if head then
                     local hs, _ = Camera:WorldToViewportPoint(head.Position)
@@ -1245,7 +1260,6 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
                 end
             end
 
-            -- TRACERS (FIXED — uses actual bounding box bottom)
             if S.ESPTracers then
                 local okBB, cfBB, sizeBB = pcall(function()
                     local cf, sz = ch:GetBoundingBox()
@@ -1298,6 +1312,7 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
 
                 local hrp = ch:FindFirstChild("HumanoidRootPart")
                 local hum = ch:FindFirstChildOfClass("Humanoid")
+                local head = ch:FindFirstChild("Head")
                 if not hrp or not hum then continue end
 
                 if not cache or cache.ch ~= ch then
@@ -1315,12 +1330,15 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
                     hl.OutlineColor = Color3.new(1, 1, 1)
                     hl.Parent = ch
 
+                    -- Anchor billboard to Head with StudsOffset for correct positioning
+                    local anchor = head or hrp
                     local bb = Instance.new("BillboardGui")
                     bb.Name = "PH5_BB"
                     bb.AlwaysOnTop = true
-                    bb.ExtentsOffset = Vector3.new(0, 3, 0)
+                    bb.StudsOffset = Vector3.new(0, 2.5, 0)
                     bb.Size = UDim2.new(0, 200, 0, 50)
-                    bb.Parent = ch
+                    bb.Adornee = anchor
+                    bb.Parent = anchor
 
                     local lbl = Instance.new("TextLabel")
                     lbl.BackgroundTransparency = 1
