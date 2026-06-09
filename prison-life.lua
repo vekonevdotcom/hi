@@ -1,5 +1,5 @@
 --============================================================
---  Prison Life | @nklays  (PC - with Customizable Circle)
+--  Prison Life | @nklays  (PC - Keybinds & Floating Buttons)
 --============================================================
 
 -- CLEANUP
@@ -17,7 +17,8 @@ if _G.PH5 and _G.PH5.espDrwCache then
     end
 end
 for _, v in ipairs(game:GetService("CoreGui"):GetChildren()) do
-    if v.Name == "PH5_Main" or v.Name == "PH5_Lock" or v.Name == "PH5_HUD" or v.Name == "PH5_KillFlash" then
+    if v.Name == "PH5_Main" or v.Name == "PH5_Lock" or v.Name == "PH5_HUD"
+       or v.Name == "PH5_KillFlash" or v.Name == "PH5_Floating" or v.Name == "PH5_KeybindModal" then
         v:Destroy()
     end
 end
@@ -35,19 +36,19 @@ local conn = _G.PH5.connections
 --============================================================
 -- SERVICES
 --============================================================
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local UIS = game:GetService("UserInputService")
+local Players      = game:GetService("Players")
+local RunService   = game:GetService("RunService")
+local UIS          = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
-local HttpService = game:GetService("HttpService")
-local LP = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
+local HttpService  = game:GetService("HttpService")
+local LP           = Players.LocalPlayer
+local Camera       = workspace.CurrentCamera
 
 --============================================================
 -- SETTINGS
 --============================================================
 local S = {
-    AimbotOn = true,
+    AimbotOn = false,
     AimPart = "HumanoidRootPart",
     AimMode = "Instant",
     AimSmooth = 0.15,
@@ -56,8 +57,8 @@ local S = {
     FOVVisible = true,
     FOVColorMode = "Rainbow",
     FOVCustomHex = "#FF0000",
-    FOVThickness = 2,                 -- NEW
-    FOVTransparency = 0.1,            -- NEW (0 = invisible, 1 = solid)
+    FOVThickness = 2,
+    FOVTransparency = 0.1,
 
     ESPOn = true,
     ESPTeam = "All",
@@ -76,11 +77,15 @@ local S = {
     ShowFPS = true,
     ShowPing = true,
     ShowSpeed = true,
+
+    -- Persistent storage
+    Keybinds = {},        -- { ["Aimbot Enabled"] = "F" }
+    FloatingButtons = {}, -- { ["Aimbot Enabled"] = {x, y} }
 }
 
 local LOCATIONS = {
     CrimBase = Vector3.new(-940, 94, 2060),
-    Prison = Vector3.new(535, 98, 2567),
+    Prison   = Vector3.new(535, 98, 2567),
 }
 
 --============================================================
@@ -98,6 +103,10 @@ local healthPrev = {}
 local lp_hrp = nil
 local fpsBuffer = {}
 local currentFPS = 0
+
+-- Bindable item registry
+-- registry[label] = { type="toggle"/"action", getState=fn, setState=fn, fire=fn }
+local registry = {}
 
 --============================================================
 -- UTILITIES
@@ -142,9 +151,7 @@ local function safeGui(name)
     return g
 end
 
---============================================================
--- PLAYER LIST
---============================================================
+-- Cache: precomputed teamcolors per render frame (skip dead/no-team checks)
 local function refreshList()
     playerList = {}
     for _, v in ipairs(Players:GetPlayers()) do
@@ -152,9 +159,11 @@ local function refreshList()
     end
 end
 refreshList()
+
 conn.plrAdd = Players.PlayerAdded:Connect(function(p)
     if p ~= LP then table.insert(playerList, p) end
 end)
+
 conn.plrRem = Players.PlayerRemoving:Connect(function(p)
     for i, v in ipairs(playerList) do
         if v == p then table.remove(playerList, i) break end
@@ -195,17 +204,338 @@ end)
 -- COLORS
 --============================================================
 local C = {
-    bg = Color3.fromRGB(15, 15, 20),
-    side = Color3.fromRGB(12, 12, 16),
-    card = Color3.fromRGB(24, 24, 32),
+    bg     = Color3.fromRGB(15, 15, 20),
+    side   = Color3.fromRGB(12, 12, 16),
+    card   = Color3.fromRGB(24, 24, 32),
     accent = Color3.fromRGB(108, 92, 231),
-    text = Color3.fromRGB(220, 220, 230),
-    dim = Color3.fromRGB(110, 110, 130),
-    green = Color3.fromRGB(46, 204, 113),
-    red = Color3.fromRGB(231, 76, 60),
+    text   = Color3.fromRGB(220, 220, 230),
+    dim    = Color3.fromRGB(110, 110, 130),
+    green  = Color3.fromRGB(46, 204, 113),
+    red    = Color3.fromRGB(231, 76, 60),
     border = Color3.fromRGB(40, 40, 52),
-    title = Color3.fromRGB(10, 10, 14),
+    title  = Color3.fromRGB(10, 10, 14),
 }
+
+--============================================================
+-- KEYBIND SYSTEM
+--============================================================
+-- input → label (so one press triggers the right item)
+local keybindMap = {}        -- keybindMap["F"] = "Aimbot Enabled"
+
+local function keyToString(input)
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+        return input.KeyCode.Name
+    elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
+        return "MB1"
+    elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+        return "MB2"
+    elseif input.UserInputType == Enum.UserInputType.MouseButton3 then
+        return "MB3"
+    end
+    return nil
+end
+
+local function bindKey(label, key)
+    -- remove old binding for this label
+    for k, l in pairs(keybindMap) do
+        if l == label then keybindMap[k] = nil end
+    end
+    if key then
+        -- remove any other label using this key
+        keybindMap[key] = label
+        S.Keybinds[label] = key
+    else
+        S.Keybinds[label] = nil
+    end
+end
+
+--============================================================
+-- KEYBIND MODAL (popup to capture keypress)
+--============================================================
+local kbModal = safeGui("PH5_KeybindModal")
+kbModal.DisplayOrder = 99998
+
+local kbOverlay = Instance.new("Frame")
+kbOverlay.Size = UDim2.new(1,0,1,0)
+kbOverlay.BackgroundColor3 = Color3.new(0,0,0)
+kbOverlay.BackgroundTransparency = 0.5
+kbOverlay.BorderSizePixel = 0
+kbOverlay.Visible = false
+kbOverlay.Active = true
+kbOverlay.Parent = kbModal
+
+local kbBox = Instance.new("Frame")
+kbBox.Size = UDim2.new(0,360,0,160)
+kbBox.Position = UDim2.new(0.5,-180,0.5,-80)
+kbBox.BackgroundColor3 = C.bg
+kbBox.BorderSizePixel = 0
+kbBox.Parent = kbOverlay
+Instance.new("UICorner", kbBox).CornerRadius = UDim.new(0,10)
+Instance.new("UIStroke", kbBox).Color = C.accent
+
+local kbTitle = Instance.new("TextLabel")
+kbTitle.Size = UDim2.new(1,-20,0,30)
+kbTitle.Position = UDim2.new(0,10,0,12)
+kbTitle.BackgroundTransparency = 1
+kbTitle.Text = "PRESS A KEY"
+kbTitle.TextColor3 = C.accent
+kbTitle.TextSize = 16
+kbTitle.Font = Enum.Font.GothamBlack
+kbTitle.Parent = kbBox
+
+local kbSub = Instance.new("TextLabel")
+kbSub.Size = UDim2.new(1,-20,0,20)
+kbSub.Position = UDim2.new(0,10,0,44)
+kbSub.BackgroundTransparency = 1
+kbSub.Text = ""
+kbSub.TextColor3 = C.dim
+kbSub.TextSize = 11
+kbSub.Font = Enum.Font.GothamSemibold
+kbSub.Parent = kbBox
+
+local kbHint = Instance.new("TextLabel")
+kbHint.Size = UDim2.new(1,-20,0,40)
+kbHint.Position = UDim2.new(0,10,0,75)
+kbHint.BackgroundTransparency = 1
+kbHint.Text = "Click inside box  = bind LMB / RMB / MB3\nClick outside box = remove keybind\nPress any key      = bind that key"
+kbHint.TextColor3 = C.text
+kbHint.TextSize = 11
+kbHint.Font = Enum.Font.Gotham
+kbHint.TextWrapped = true
+kbHint.Parent = kbBox
+
+local kbCurrent = Instance.new("TextLabel")
+kbCurrent.Size = UDim2.new(1,-20,0,18)
+kbCurrent.Position = UDim2.new(0,10,1,-28)
+kbCurrent.BackgroundTransparency = 1
+kbCurrent.Text = ""
+kbCurrent.TextColor3 = C.green
+kbCurrent.TextSize = 11
+kbCurrent.Font = Enum.Font.GothamBold
+kbCurrent.Parent = kbBox
+
+local kbActiveLabel = nil
+local kbWaitConn = nil
+
+local function closeKeybindModal()
+    kbOverlay.Visible = false
+    kbActiveLabel = nil
+    if kbWaitConn then kbWaitConn:Disconnect(); kbWaitConn = nil end
+end
+
+local function openKeybindModal(label)
+    kbActiveLabel = label
+    kbSub.Text = "for: " .. label
+    kbCurrent.Text = S.Keybinds[label] and ("Current: " .. S.Keybinds[label]) or "Currently: unbound"
+    kbOverlay.Visible = true
+
+    if kbWaitConn then kbWaitConn:Disconnect() end
+    kbWaitConn = UIS.InputBegan:Connect(function(input, processed)
+        if not kbActiveLabel then return end
+
+        -- Detect click on/off box for mouse-button bindings
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+           or input.UserInputType == Enum.UserInputType.MouseButton2
+           or input.UserInputType == Enum.UserInputType.MouseButton3 then
+            local mx, my = input.Position.X, input.Position.Y
+            local bx, by = kbBox.AbsolutePosition.X, kbBox.AbsolutePosition.Y
+            local bw, bh = kbBox.AbsoluteSize.X, kbBox.AbsoluteSize.Y
+            local insideBox = mx >= bx and mx <= bx+bw and my >= by and my <= by+bh
+
+            if insideBox then
+                -- bind mouse button
+                local k = keyToString(input)
+                if k then bindKey(kbActiveLabel, k) end
+            else
+                -- remove keybind
+                bindKey(kbActiveLabel, nil)
+            end
+            closeKeybindModal()
+            return
+        end
+
+        -- Keyboard: bind the key
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            -- Escape closes without changes
+            if input.KeyCode == Enum.KeyCode.Escape then
+                closeKeybindModal()
+                return
+            end
+            local k = keyToString(input)
+            if k then
+                bindKey(kbActiveLabel, k)
+                closeKeybindModal()
+            end
+        end
+    end)
+end
+
+--============================================================
+-- GLOBAL KEY LISTENER (fires bound actions)
+--============================================================
+conn.globalKeys = UIS.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if kbOverlay.Visible then return end  -- ignore while binding
+
+    local k = keyToString(input)
+    if not k then return end
+    local label = keybindMap[k]
+    if not label then return end
+    local item = registry[label]
+    if not item then return end
+
+    if item.type == "toggle" then
+        item.setState(not item.getState())
+    elseif item.type == "action" then
+        item.fire()
+    end
+end)
+
+--============================================================
+-- FLOATING BUTTONS LAYER
+--============================================================
+local floatGui = safeGui("PH5_Floating")
+local floatingButtons = {}  -- label -> btn frame
+
+-- Make any frame draggable (mouse only on PC)
+local function makeFloatDraggable(frame, onMove)
+    local dragging = false
+    local startPos
+    local startMouse
+    frame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            startPos = frame.Position
+            startMouse = UIS:GetMouseLocation()
+        end
+    end)
+    frame.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+            if onMove then onMove() end
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local cur = UIS:GetMouseLocation()
+            local delta = cur - startMouse
+            frame.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+local function createFloatingButton(label)
+    if floatingButtons[label] then return end
+    local item = registry[label]
+    if not item then return end
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 110, 0, 36)
+    local savedPos = S.FloatingButtons[label]
+    if savedPos then
+        btn.Position = UDim2.new(0, savedPos[1], 0, savedPos[2])
+    else
+        btn.Position = UDim2.new(0.5, -55, 0.5, -18)
+    end
+    btn.BackgroundColor3 = C.bg
+    btn.Text = label
+    btn.TextColor3 = C.text
+    btn.TextSize = 12
+    btn.Font = Enum.Font.GothamBold
+    btn.BorderSizePixel = 0
+    btn.AutoButtonColor = false
+    btn.Parent = floatGui
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+    local stroke = Instance.new("UIStroke", btn)
+    stroke.Color = C.border
+    stroke.Thickness = 1.5
+
+    floatingButtons[label] = btn
+
+    -- Visual update based on state
+    local function updateVisual()
+        if item.type == "toggle" and item.getState() then
+            btn.BackgroundColor3 = C.green
+            btn.TextColor3 = Color3.new(1,1,1)
+            stroke.Color = Color3.fromRGB(0,230,130)
+        else
+            btn.BackgroundColor3 = C.bg
+            btn.TextColor3 = C.text
+            stroke.Color = C.border
+        end
+    end
+    updateVisual()
+
+    -- Hook into the item so external state updates the visual too
+    item.subscribers = item.subscribers or {}
+    table.insert(item.subscribers, updateVisual)
+
+    -- Tap vs Drag detection
+    local pressed = false
+    local pressPos
+    local dragged = false
+    local DRAG_THRESH = 6
+
+    btn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            pressed = true
+            dragged = false
+            pressPos = input.Position
+        elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+            -- right click removes the floating button
+            btn:Destroy()
+            floatingButtons[label] = nil
+            S.FloatingButtons[label] = nil
+            -- remove from subscribers
+            if item.subscribers then
+                for i, fn in ipairs(item.subscribers) do
+                    if fn == updateVisual then table.remove(item.subscribers, i) break end
+                end
+            end
+        end
+    end)
+
+    UIS.InputChanged:Connect(function(input)
+        if pressed and input.UserInputType == Enum.UserInputType.MouseMovement then
+            if (input.Position - pressPos).Magnitude > DRAG_THRESH then
+                dragged = true
+            end
+        end
+    end)
+
+    btn.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            if pressed and not dragged then
+                -- tap
+                if item.type == "toggle" then
+                    item.setState(not item.getState())
+                    updateVisual()
+                elseif item.type == "action" then
+                    item.fire()
+                    -- flash green then fade out
+                    btn.BackgroundColor3 = C.green
+                    btn.TextColor3 = Color3.new(1,1,1)
+                    task.spawn(function()
+                        task.wait(0.3)
+                        TweenService:Create(btn, TweenInfo.new(0.4), {
+                            BackgroundColor3 = C.bg, TextColor3 = C.text
+                        }):Play()
+                    end)
+                end
+            end
+            pressed = false
+        end
+    end)
+
+    makeFloatDraggable(btn, function()
+        S.FloatingButtons[label] = { btn.Position.X.Offset, btn.Position.Y.Offset }
+    end)
+
+    return btn
+end
 
 --============================================================
 -- MAIN GUI
@@ -214,8 +544,8 @@ local gui = safeGui("PH5_Main")
 
 local main = Instance.new("Frame")
 main.Name = "Main"
-main.Size = UDim2.new(0, 540, 0, 420)
-main.Position = UDim2.new(0.5, -270, 0.5, -210)
+main.Size = UDim2.new(0, 560, 0, 420)
+main.Position = UDim2.new(0.5, -280, 0.5, -210)
 main.BackgroundColor3 = C.bg
 main.BorderSizePixel = 0
 main.ClipsDescendants = true
@@ -260,7 +590,6 @@ tLabel.TextXAlignment = Enum.TextXAlignment.Left
 tLabel.Parent = tBar
 
 local closeBtn = Instance.new("TextButton")
-closeBtn.Name = "CloseBtn"
 closeBtn.Size = UDim2.new(0, 28, 0, 28)
 closeBtn.Position = UDim2.new(1, -36, 0, 6)
 closeBtn.BackgroundColor3 = C.red
@@ -314,8 +643,9 @@ closeBtn.MouseButton1Click:Connect(function()
     pcall(function() _G.AimbotFOVCircle:Remove() end)
     for _, c in pairs(conn) do pcall(function() c:Disconnect() end) end
     gui:Destroy()
+    floatGui:Destroy()
     for _, v in ipairs(game:GetService("CoreGui"):GetChildren()) do
-        if v.Name == "PH5_Lock" or v.Name == "PH5_HUD" or v.Name == "PH5_KillFlash" then
+        if v.Name == "PH5_Lock" or v.Name == "PH5_HUD" or v.Name == "PH5_KillFlash" or v.Name == "PH5_KeybindModal" then
             v:Destroy()
         end
     end
@@ -440,7 +770,7 @@ for i, name in ipairs(tabNames) do
 end
 
 --============================================================
--- UI COMPONENTS
+-- UI HELPERS
 --============================================================
 local function mkCard(par, h)
     local f = Instance.new("Frame")
@@ -453,9 +783,9 @@ local function mkCard(par, h)
     return f
 end
 
-local function mkLabel(par, txt, pos)
+local function mkLabel(par, txt, pos, sizeX)
     local l = Instance.new("TextLabel")
-    l.Size = UDim2.new(0.55, 0, 1, 0)
+    l.Size = UDim2.new(sizeX or 0.5, 0, 1, 0)
     l.Position = pos or UDim2.new(0, 12, 0, 0)
     l.BackgroundTransparency = 1
     l.Text = txt
@@ -479,9 +809,91 @@ local function mkSection(par, txt)
     l.Parent = par
 end
 
-local function mkToggle(par, label, def, cb)
+--============================================================
+-- KEYBIND & HOLD-FOR-FLOAT HELPERS
+--============================================================
+local function addKeybindButton(card, label)
+    local kb = Instance.new("TextButton")
+    kb.Size = UDim2.new(0, 26, 0, 22)
+    kb.Position = UDim2.new(1, -90, 0.5, -11)
+    kb.BackgroundColor3 = Color3.fromRGB(38, 38, 48)
+    kb.Text = "..."
+    kb.TextColor3 = C.dim
+    kb.TextSize = 14
+    kb.Font = Enum.Font.GothamBold
+    kb.BorderSizePixel = 0
+    kb.Parent = card
+    Instance.new("UICorner", kb).CornerRadius = UDim.new(0, 4)
+
+    local function refresh()
+        local k = S.Keybinds[label]
+        if k then
+            kb.Text = k
+            kb.TextColor3 = C.accent
+            kb.TextSize = 10
+        else
+            kb.Text = "..."
+            kb.TextColor3 = C.dim
+            kb.TextSize = 14
+        end
+    end
+    refresh()
+    kb.MouseButton1Click:Connect(function()
+        openKeybindModal(label)
+        -- refresh when modal closes
+        task.spawn(function()
+            while kbOverlay.Visible do task.wait() end
+            refresh()
+        end)
+    end)
+    return kb
+end
+
+-- Attach hold-2s-for-float behavior to any UI element
+local function attachHoldForFloat(element, label)
+    local pressed = false
+    local fireTime = nil
+
+    element.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            pressed = true
+            fireTime = tick()
+            task.spawn(function()
+                local myTime = fireTime
+                task.wait(2)
+                if pressed and myTime == fireTime then
+                    createFloatingButton(label)
+                    pressed = false  -- consume the click
+                end
+            end)
+        end
+    end)
+    element.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            pressed = false
+        end
+    end)
+end
+
+--============================================================
+-- COMPONENT BUILDERS (with registry + keybind + hold-to-float)
+--============================================================
+local function mkToggle(par, label, defField, cb, opts)
+    opts = opts or {}
     local card = mkCard(par, 38)
-    mkLabel(card, label)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(0.6, 0, 1, 0)
+    lbl.Position = UDim2.new(0, 12, 0, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = label
+    lbl.TextColor3 = C.text
+    lbl.TextSize = 13
+    lbl.Font = Enum.Font.GothamSemibold
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = card
+
+    local def = (type(defField) == "string") and S[defField] or defField
     local bg = Instance.new("TextButton")
     bg.Size = UDim2.new(0, 42, 0, 22)
     bg.Position = UDim2.new(1, -54, 0.5, -11)
@@ -497,19 +909,45 @@ local function mkToggle(par, label, def, cb)
     cir.BorderSizePixel = 0
     cir.Parent = bg
     Instance.new("UICorner", cir).CornerRadius = UDim.new(1, 0)
-    local st = def
-    bg.MouseButton1Click:Connect(function()
-        st = not st
-        TweenService:Create(bg, TweenInfo.new(0.15), { BackgroundColor3 = st and C.green or Color3.fromRGB(55, 55, 65) }):Play()
-        TweenService:Create(cir, TweenInfo.new(0.15), { Position = st and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8) }):Play()
-        cb(st)
-    end)
-    return card
+
+    local state = def
+
+    local function setVisual(v)
+        TweenService:Create(bg, TweenInfo.new(0.12), { BackgroundColor3 = v and C.green or Color3.fromRGB(55, 55, 65) }):Play()
+        TweenService:Create(cir, TweenInfo.new(0.12), { Position = v and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8) }):Play()
+    end
+
+    local item = {
+        type = "toggle",
+        getState = function() return state end,
+        setState = function(v)
+            state = v
+            setVisual(v)
+            cb(v)
+            if item.subscribers then
+                for _, fn in ipairs(item.subscribers) do fn() end
+            end
+        end,
+        subscribers = {},
+    }
+    registry[label] = item
+
+    bg.MouseButton1Click:Connect(function() item.setState(not state) end)
+
+    if not opts.noBind then
+        addKeybindButton(card, label)
+        attachHoldForFloat(card, label)
+        attachHoldForFloat(bg, label)
+    end
+
+    return card, item
 end
 
-local function mkDropdown(par, label, opts, def, cb)
+local function mkDropdown(par, label, opts, defField, cb)
     local card = mkCard(par, 38)
-    mkLabel(card, label)
+    mkLabel(card, label, UDim2.new(0,12,0,0), 0.45)
+
+    local def = (type(defField) == "string") and S[defField] or defField
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(0, 110, 0, 24)
     btn.Position = UDim2.new(1, -122, 0.5, -12)
@@ -533,8 +971,17 @@ end
 
 local function mkSlider(par, label, mn, mx, def, step, cb)
     local card = mkCard(par, 50)
-    local lbl = mkLabel(card, label .. ": " .. def, UDim2.new(0, 12, 0, 0))
+    local lbl = Instance.new("TextLabel")
     lbl.Size = UDim2.new(1, -24, 0, 20)
+    lbl.Position = UDim2.new(0, 12, 0, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = label .. ": " .. def
+    lbl.TextColor3 = C.text
+    lbl.TextSize = 13
+    lbl.Font = Enum.Font.GothamSemibold
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = card
+
     local track = Instance.new("Frame")
     track.Size = UDim2.new(1, -24, 0, 6)
     track.Position = UDim2.new(0, 12, 0, 30)
@@ -558,13 +1005,13 @@ local function mkSlider(par, label, mn, mx, def, step, cb)
     Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
     local drag = false
     knob.InputBegan:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then drag = true end
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then drag = true end
     end)
-    conn["sEnd_" .. label] = UIS.InputEnded:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then drag = false end
+    UIS.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
     end)
-    conn["sMove_" .. label] = UIS.InputChanged:Connect(function(i)
-        if drag and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+    UIS.InputChanged:Connect(function(i)
+        if drag and i.UserInputType == Enum.UserInputType.MouseMovement then
             local rel = math.clamp((i.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
             local val = math.clamp(math.floor((mn + (mx - mn) * rel) / step + 0.5) * step, mn, mx)
             local pct = (val - mn) / (mx - mn)
@@ -598,7 +1045,9 @@ local function mkTextInput(par, label, def, cb)
     return card
 end
 
-local function mkButton(par, label, col, cb)
+-- Action button (with optional bind/hold-to-float)
+local function mkActionButton(par, label, col, cb, opts)
+    opts = opts or {}
     local b = Instance.new("TextButton")
     b.Size = UDim2.new(1, 0, 0, 38)
     b.BackgroundColor3 = col
@@ -607,29 +1056,79 @@ local function mkButton(par, label, col, cb)
     b.TextSize = 13
     b.Font = Enum.Font.GothamBold
     b.BorderSizePixel = 0
+    b.AutoButtonColor = false
     b.Parent = par
     Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
-    b.MouseButton1Click:Connect(cb)
-    return b
+
+    local item = {
+        type = "action",
+        getState = function() return false end,
+        setState = function(_) end,
+        fire = cb,
+        subscribers = {},
+    }
+    registry[label] = item
+
+    b.MouseButton1Click:Connect(function()
+        cb()
+    end)
+
+    if not opts.noBind then
+        -- For action buttons, the keybind dots are on a small frame to the right
+        local kb = Instance.new("TextButton")
+        kb.Size = UDim2.new(0, 26, 0, 22)
+        kb.Position = UDim2.new(1, -32, 0.5, -11)
+        kb.BackgroundColor3 = Color3.fromRGB(0,0,0)
+        kb.BackgroundTransparency = 0.3
+        kb.Text = "..."
+        kb.TextColor3 = Color3.new(1,1,1)
+        kb.TextSize = 14
+        kb.Font = Enum.Font.GothamBold
+        kb.BorderSizePixel = 0
+        kb.Parent = b
+        Instance.new("UICorner", kb).CornerRadius = UDim.new(0, 4)
+
+        local function refresh()
+            local k = S.Keybinds[label]
+            if k then
+                kb.Text = k
+                kb.TextSize = 10
+            else
+                kb.Text = "..."
+                kb.TextSize = 14
+            end
+        end
+        refresh()
+        kb.MouseButton1Click:Connect(function()
+            openKeybindModal(label)
+            task.spawn(function()
+                while kbOverlay.Visible do task.wait() end
+                refresh()
+            end)
+        end)
+        attachHoldForFloat(b, label)
+    end
+
+    return b, item
 end
 
 --============================================================
--- AIMBOT TAB (with customizable circle)
+-- AIMBOT TAB
 --============================================================
 local ap = pages["Aimbot"]
 mkSection(ap, "General")
-mkToggle(ap, "Aimbot Enabled", S.AimbotOn, function(v) S.AimbotOn = v end)
-mkDropdown(ap, "Aim Part", { "HumanoidRootPart", "Head" }, S.AimPart, function(v) S.AimPart = v end)
-mkDropdown(ap, "Aim Mode", { "Instant", "Smooth" }, S.AimMode, function(v) S.AimMode = v end)
+mkToggle(ap, "Aimbot Enabled", "AimbotOn", function(v) S.AimbotOn = v end)
+mkDropdown(ap, "Aim Part", { "HumanoidRootPart", "Head" }, "AimPart", function(v) S.AimPart = v end)
+mkDropdown(ap, "Aim Mode", { "Instant", "Smooth" }, "AimMode", function(v) S.AimMode = v end)
 mkSlider(ap, "Smoothing", 1, 100, math.floor(S.AimSmooth * 100), 1, function(v) S.AimSmooth = v / 100 end)
 mkSection(ap, "Targeting")
-mkDropdown(ap, "Target Team", { "Guards", "Criminals", "Inmates", "All" }, S.AimTeam, function(v) S.AimTeam = v end)
+mkDropdown(ap, "Target Team", { "Guards", "Criminals", "Inmates", "All" }, "AimTeam", function(v) S.AimTeam = v end)
 mkSection(ap, "FOV Circle")
-mkToggle(ap, "Show Circle", S.FOVVisible, function(v) S.FOVVisible = v end)
+mkToggle(ap, "Show Circle", "FOVVisible", function(v) S.FOVVisible = v end)
 mkSlider(ap, "Circle Size", 50, 500, S.FOVRadius, 10, function(v) S.FOVRadius = v end)
 mkSlider(ap, "Thickness", 1, 10, S.FOVThickness, 1, function(v) S.FOVThickness = v end)
 mkSlider(ap, "Transparency", 0, 100, math.floor(S.FOVTransparency * 100), 5, function(v) S.FOVTransparency = v / 100 end)
-mkDropdown(ap, "Circle Color", { "Rainbow", "Custom" }, S.FOVColorMode, function(v) S.FOVColorMode = v end)
+mkDropdown(ap, "Circle Color", { "Rainbow", "Custom" }, "FOVColorMode", function(v) S.FOVColorMode = v end)
 mkTextInput(ap, "Custom Hex", S.FOVCustomHex, function(v) S.FOVCustomHex = v end)
 
 --============================================================
@@ -658,26 +1157,26 @@ local function destroyAllHighlights()
 end
 
 mkSection(ep, "General")
-mkToggle(ep, "ESP Enabled", S.ESPOn, function(v)
+mkToggle(ep, "ESP Enabled", "ESPOn", function(v)
     S.ESPOn = v
     if not v then destroyAllDrawings(); destroyAllHighlights() end
 end)
-mkDropdown(ep, "Show Team", { "All", "Guards", "Criminals", "Inmates" }, S.ESPTeam, function(v)
+mkDropdown(ep, "Show Team", { "All", "Guards", "Criminals", "Inmates" }, "ESPTeam", function(v)
     S.ESPTeam = v
     destroyAllDrawings(); destroyAllHighlights()
 end)
 mkSection(ep, "Style")
-mkDropdown(ep, "ESP Style", { "Highlight", "2D Box", "Head Only" }, S.ESPStyle, function(v)
+mkDropdown(ep, "ESP Style", { "Highlight", "2D Box", "Head Only" }, "ESPStyle", function(v)
     S.ESPStyle = v
     destroyAllDrawings(); destroyAllHighlights()
 end)
 mkSection(ep, "Info Labels")
-mkToggle(ep, "Show Names", S.ESPNames, function(v) S.ESPNames = v end)
-mkToggle(ep, "Show Health", S.ESPHealth, function(v) S.ESPHealth = v end)
-mkToggle(ep, "Show Distance", S.ESPDist, function(v) S.ESPDist = v end)
+mkToggle(ep, "Show Names", "ESPNames", function(v) S.ESPNames = v end)
+mkToggle(ep, "Show Health", "ESPHealth", function(v) S.ESPHealth = v end)
+mkToggle(ep, "Show Distance", "ESPDist", function(v) S.ESPDist = v end)
 mkSection(ep, "Tracers")
-mkToggle(ep, "Tracers", S.ESPTracers, function(v) S.ESPTracers = v end)
-mkDropdown(ep, "Tracer Origin", { "Bottom", "Center", "Upper" }, S.ESPTracerOrigin, function(v) S.ESPTracerOrigin = v end)
+mkToggle(ep, "Tracers", "ESPTracers", function(v) S.ESPTracers = v end)
+mkDropdown(ep, "Tracer Origin", { "Bottom", "Center", "Upper" }, "ESPTracerOrigin", function(v) S.ESPTracerOrigin = v end)
 mkSection(ep, "Appearance")
 mkSlider(ep, "Fill Transparency", 0, 100, math.floor(S.ESPFillAlpha * 100), 5, function(v)
     S.ESPFillAlpha = v / 100
@@ -691,11 +1190,11 @@ end)
 --============================================================
 local hp = pages["HUD"]
 mkSection(hp, "Display")
-mkToggle(hp, "Show FPS", S.ShowFPS, function(v) S.ShowFPS = v end)
-mkToggle(hp, "Show Ping", S.ShowPing, function(v) S.ShowPing = v end)
-mkToggle(hp, "Show Speed", S.ShowSpeed, function(v) S.ShowSpeed = v end)
+mkToggle(hp, "Show FPS", "ShowFPS", function(v) S.ShowFPS = v end)
+mkToggle(hp, "Show Ping", "ShowPing", function(v) S.ShowPing = v end)
+mkToggle(hp, "Show Speed", "ShowSpeed", function(v) S.ShowSpeed = v end)
 mkSection(hp, "Hitmarkers")
-mkToggle(hp, "Hitmarkers Enabled", S.HitmarkOn, function(v) S.HitmarkOn = v end)
+mkToggle(hp, "Hitmarkers Enabled", "HitmarkOn", function(v) S.HitmarkOn = v end)
 mkTextInput(hp, "Hit Color", S.HitColor, function(v) S.HitColor = v end)
 mkTextInput(hp, "Hurt Color", S.HurtColor, function(v) S.HurtColor = v end)
 mkTextInput(hp, "Kill Color", S.KillColor, function(v) S.KillColor = v end)
@@ -705,19 +1204,19 @@ mkTextInput(hp, "Kill Color", S.KillColor, function(v) S.KillColor = v end)
 --============================================================
 local tp = pages["Teleport"]
 mkSection(tp, "Locations")
-mkButton(tp, "Criminal Base", Color3.fromRGB(170, 50, 50), function()
+mkActionButton(tp, "Criminal Base", Color3.fromRGB(170, 50, 50), function()
     if LP.Character and LP.Character:FindFirstChild("HumanoidRootPart") then
         LP.Character.HumanoidRootPart.CFrame = CFrame.new(LOCATIONS.CrimBase)
     end
 end)
-mkButton(tp, "Prison Spawn", Color3.fromRGB(50, 110, 170), function()
+mkActionButton(tp, "Prison Spawn", Color3.fromRGB(50, 110, 170), function()
     if LP.Character and LP.Character:FindFirstChild("HumanoidRootPart") then
         LP.Character.HumanoidRootPart.CFrame = CFrame.new(LOCATIONS.Prison)
     end
 end)
 
 --============================================================
--- SETTINGS TAB
+-- SETTINGS TAB (no keybinds/floats — system stuff)
 --============================================================
 local spp = pages["Settings"]
 mkSection(spp, "Configs")
@@ -749,33 +1248,57 @@ cfgStatus.Parent = spp
 local CONFIG_DIR = "PrisonHub"
 local function ensureDir() pcall(function() if not isfolder(CONFIG_DIR) then makefolder(CONFIG_DIR) end end) end
 
-mkButton(spp, "Save Config", C.accent, function()
+-- System action: NO bind
+mkActionButton(spp, "Save Config", C.accent, function()
     local name = cfgBox.Text; if name == "" then return end; ensureDir()
     local ok, err = pcall(function() writefile(CONFIG_DIR .. "/" .. name .. ".json", HttpService:JSONEncode(S)) end)
     cfgStatus.Text = ok and ("Saved: " .. name) or ("Error: " .. (err or "?")); cfgStatus.TextColor3 = ok and C.green or C.red
-end)
-mkButton(spp, "Load Config", Color3.fromRGB(50, 130, 200), function()
+end, {noBind=true})
+
+mkActionButton(spp, "Load Config", Color3.fromRGB(50, 130, 200), function()
     local name = cfgBox.Text; if name == "" then return end
     local ok, err = pcall(function()
         local data = HttpService:JSONDecode(readfile(CONFIG_DIR .. "/" .. name .. ".json"))
         for k, v in pairs(data) do S[k] = v end
     end)
     cfgStatus.Text = ok and ("Loaded: " .. name) or ("Error: " .. (err or "not found")); cfgStatus.TextColor3 = ok and C.green or C.red
-end)
-mkButton(spp, "Delete Config", C.red, function()
+    -- restore keybind map
+    keybindMap = {}
+    for label, k in pairs(S.Keybinds or {}) do keybindMap[k] = label end
+end, {noBind=true})
+
+mkActionButton(spp, "Delete Config", C.red, function()
     local name = cfgBox.Text; if name == "" then return end
     local ok, err = pcall(function() delfile(CONFIG_DIR .. "/" .. name .. ".json") end)
     cfgStatus.Text = ok and ("Deleted: " .. name) or ("Error: " .. (err or "?")); cfgStatus.TextColor3 = ok and C.green or C.red
-end)
+end, {noBind=true})
+
 mkSection(spp, "Other")
-mkButton(spp, "Rejoin Server", Color3.fromRGB(180, 130, 0), function()
+mkActionButton(spp, "Rejoin Server", Color3.fromRGB(180, 130, 0), function()
     pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, LP) end)
-end)
+end, {noBind=true})
+
+mkActionButton(spp, "Clear All Keybinds", Color3.fromRGB(120, 60, 60), function()
+    keybindMap = {}
+    S.Keybinds = {}
+    cfgStatus.Text = "All keybinds cleared"
+    cfgStatus.TextColor3 = C.green
+end, {noBind=true})
+
+mkActionButton(spp, "Clear All Floating Buttons", Color3.fromRGB(120, 60, 60), function()
+    for label, btn in pairs(floatingButtons) do
+        btn:Destroy()
+    end
+    floatingButtons = {}
+    S.FloatingButtons = {}
+    cfgStatus.Text = "All floating buttons cleared"
+    cfgStatus.TextColor3 = C.green
+end, {noBind=true})
 
 switchTab("Aimbot")
 
 --============================================================
--- FOV CIRCLE (with custom thickness/transparency)
+-- FOV CIRCLE
 --============================================================
 local fovCircle = Drawing.new("Circle")
 fovCircle.Radius = S.FOVRadius
@@ -788,7 +1311,7 @@ fovCircle.Color = Color3.new(1, 1, 1)
 _G.AimbotFOVCircle = fovCircle
 
 --============================================================
--- LOCK-ON DISPLAY
+-- LOCK-ON / HUD / FLASH
 --============================================================
 local lockGui = safeGui("PH5_Lock")
 local lockBg = Instance.new("Frame")
@@ -811,9 +1334,6 @@ lockTxt.Font = Enum.Font.GothamBold
 lockTxt.Text = ""
 lockTxt.Parent = lockBg
 
---============================================================
--- HUD DISPLAY
---============================================================
 local hudGui = safeGui("PH5_HUD")
 local hudFrame = Instance.new("Frame")
 hudFrame.Size = UDim2.new(0, 150, 0, 60)
@@ -836,9 +1356,6 @@ hudLabel.TextYAlignment = Enum.TextYAlignment.Center
 hudLabel.Text = ""
 hudLabel.Parent = hudFrame
 
---============================================================
--- KILL FLASH
---============================================================
 local flashGui = safeGui("PH5_KillFlash")
 flashGui.DisplayOrder = 99999
 local flashFrame = Instance.new("Frame")
@@ -849,7 +1366,7 @@ flashFrame.BorderSizePixel = 0
 flashFrame.Parent = flashGui
 
 --============================================================
--- HITMARKER SYSTEM
+-- HITMARKER
 --============================================================
 local hitLines = {}
 for i = 1, 4 do
@@ -973,7 +1490,7 @@ local function checkHits()
 end
 
 --============================================================
--- AIMBOT LOGIC
+-- AIMBOT
 --============================================================
 local function getClosest(mPos)
     local best, bestD = nil, S.FOVRadius
@@ -1012,7 +1529,7 @@ conn.mb1up = UIS.InputEnded:Connect(function(i)
 end)
 
 --============================================================
--- DRAWING ESP HELPERS
+-- DRAWING ESP
 --============================================================
 local function getOrCreateDraw(plr)
     if espDrwCache[plr] then return espDrwCache[plr] end
@@ -1041,12 +1558,14 @@ local function hideAllDrawings()
 end
 
 --============================================================
--- MAIN LOOP
+-- MAIN LOOP (optimized: cache values per frame)
 --============================================================
 local espTick = 0
 
 conn.render = RunService.RenderStepped:Connect(function(dt)
     local mPos = UIS:GetMouseLocation()
+    local camCF = Camera.CFrame
+    local camPos = camCF.Position
     local vpX = Camera.ViewportSize.X
     local vpY = Camera.ViewportSize.Y
 
@@ -1079,7 +1598,7 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
     hue = (hue + dt * 0.1) % 1
     local rainbow = Color3.fromHSV(hue, 1, 1)
 
-    -- FOV Circle (custom thickness + transparency)
+    -- FOV Circle
     fovCircle.Position = mPos
     fovCircle.Radius = S.FOVRadius
     fovCircle.Visible = S.FOVVisible
@@ -1096,10 +1615,10 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
             local part = lockedTarget.Character:FindFirstChild(S.AimPart)
             if part then
                 if S.AimMode == "Instant" then
-                    Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, part.Position)
+                    Camera.CFrame = CFrame.lookAt(camPos, part.Position)
                 else
-                    Camera.CFrame = Camera.CFrame:Lerp(
-                        CFrame.lookAt(Camera.CFrame.Position, part.Position),
+                    Camera.CFrame = camCF:Lerp(
+                        CFrame.lookAt(camPos, part.Position),
                         math.clamp(S.AimSmooth, 0.01, 1)
                     )
                 end
@@ -1114,11 +1633,10 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
         lockBg.Visible = false
     end
 
-    -- Hitmarks
     checkHits()
 
     --==============================================
-    -- ESP DRAWINGS — HIDE FIRST, THEN SHOW
+    -- ESP DRAWINGS
     --==============================================
     hideAllDrawings()
 
@@ -1134,10 +1652,18 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
             tracerOrigin = Vector2.new(vpX / 2, 0)
         end
 
+        local lpPos = lp_hrp and lp_hrp.Position
+        local style = S.ESPStyle
+        local doNames = S.ESPNames
+        local doHealth = S.ESPHealth
+        local doDist = S.ESPDist
+        local doTracers = S.ESPTracers
+        local teamFilter = S.ESPTeam
+
         for _, v in ipairs(playerList) do
             local ch = v.Character
             if not ch then continue end
-            if not teamMatch(v, S.ESPTeam) then continue end
+            if not teamMatch(v, teamFilter) then continue end
 
             local hrp = ch:FindFirstChild("HumanoidRootPart")
             local head = ch:FindFirstChild("Head")
@@ -1150,7 +1676,7 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
             local d = getOrCreateDraw(v)
             local tc = getTeamColor(v)
 
-            if S.ESPStyle == "2D Box" then
+            if style == "2D Box" then
                 local okBB, cfBB, sizeBB = pcall(function()
                     local cf, sz = ch:GetBoundingBox()
                     return cf, sz
@@ -1159,14 +1685,10 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
                 if okBB and cfBB then
                     cf, size = cfBB, sizeBB
                 else
-                    cf = hrp.CFrame
-                    size = Vector3.new(4, 5, 2)
+                    cf = hrp.CFrame; size = Vector3.new(4, 5, 2)
                 end
 
-                local halfH = size.Y / 2
-                local halfW = size.X / 2
-                local halfD = size.Z / 2
-
+                local halfH, halfW, halfD = size.Y / 2, size.X / 2, size.Z / 2
                 local corners = {
                     cf * CFrame.new( halfW,  halfH,  halfD),
                     cf * CFrame.new(-halfW,  halfH,  halfD),
@@ -1206,7 +1728,7 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
 
                     local cx = (minX + maxX) / 2
                     local textY = minY - 4
-                    if S.ESPNames then
+                    if doNames then
                         d.name.Text = v.Name
                         d.name.Position = Vector2.new(cx, textY - 14)
                         d.name.Color = tc
@@ -1214,9 +1736,9 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
                         textY = textY - 14
                     end
                     local infoParts = {}
-                    if S.ESPHealth then table.insert(infoParts, math.floor(hum.Health) .. "HP") end
-                    if S.ESPDist and lp_hrp then
-                        table.insert(infoParts, math.floor((hrp.Position - lp_hrp.Position).Magnitude) .. "m")
+                    if doHealth then table.insert(infoParts, math.floor(hum.Health) .. "HP") end
+                    if doDist and lpPos then
+                        table.insert(infoParts, math.floor((hrp.Position - lpPos).Magnitude) .. "m")
                     end
                     if #infoParts > 0 then
                         d.info.Text = table.concat(infoParts, " | ")
@@ -1226,11 +1748,11 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
                     end
                 end
 
-            elseif S.ESPStyle == "Head Only" then
+            elseif style == "Head Only" then
                 if head then
                     local hs, _ = Camera:WorldToViewportPoint(head.Position)
                     if hs.Z > 0 then
-                        local dist3D = (head.Position - Camera.CFrame.Position).Magnitude
+                        local dist3D = (head.Position - camPos).Magnitude
                         local r = math.clamp(800 / dist3D, 4, 30)
                         d.head.Position = Vector2.new(hs.X, hs.Y)
                         d.head.Radius = r
@@ -1238,7 +1760,7 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
                         d.head.Visible = true
 
                         local textY = hs.Y - r - 4
-                        if S.ESPNames then
+                        if doNames then
                             d.name.Text = v.Name
                             d.name.Position = Vector2.new(hs.X, textY - 14)
                             d.name.Color = tc
@@ -1246,9 +1768,9 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
                             textY = textY - 14
                         end
                         local infoParts = {}
-                        if S.ESPHealth then table.insert(infoParts, math.floor(hum.Health) .. "HP") end
-                        if S.ESPDist and lp_hrp then
-                            table.insert(infoParts, math.floor((hrp.Position - lp_hrp.Position).Magnitude) .. "m")
+                        if doHealth then table.insert(infoParts, math.floor(hum.Health) .. "HP") end
+                        if doDist and lpPos then
+                            table.insert(infoParts, math.floor((hrp.Position - lpPos).Magnitude) .. "m")
                         end
                         if #infoParts > 0 then
                             d.info.Text = table.concat(infoParts, " | ")
@@ -1260,7 +1782,7 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
                 end
             end
 
-            if S.ESPTracers then
+            if doTracers then
                 local okBB, cfBB, sizeBB = pcall(function()
                     local cf, sz = ch:GetBoundingBox()
                     return cf, sz
@@ -1330,7 +1852,6 @@ conn.render = RunService.RenderStepped:Connect(function(dt)
                     hl.OutlineColor = Color3.new(1, 1, 1)
                     hl.Parent = ch
 
-                    -- Anchor billboard to Head with StudsOffset for correct positioning
                     local anchor = head or hrp
                     local bb = Instance.new("BillboardGui")
                     bb.Name = "PH5_BB"
@@ -1375,7 +1896,7 @@ end)
 pcall(function()
     game.StarterGui:SetCore("SendNotification", {
         Title = "Prison Life | @nklays",
-        Text = "Hub loaded successfully",
-        Duration = 3
+        Text = "Hold any button 2s to make floating | Click ... to bind",
+        Duration = 5
     })
 end)
